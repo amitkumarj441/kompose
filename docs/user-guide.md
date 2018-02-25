@@ -1,49 +1,17 @@
 # User Guide
 
-- CLI
-  - [`kompose convert`](#kompose-convert)
-  - [`kompose up`](#kompose-up)
-  - [`kompose down`](#kompose-down)
-- Documentation
-  - [Build and Push Docker Images](#build-and-push-docker-images)
-  - [Alternative Conversions](#alternative-conversions)
-  - [Labels](#labels)
-  - [Restart](#restart)
-  - [Docker Compose Versions](#docker-compose-versions)
+* TOC
+{:toc}
 
 Kompose has support for two providers: OpenShift and Kubernetes.
-You can choose targeted provider either using global option `--provider`, or by setting environment variable `PROVIDER`.
-By setting environment variable `PROVIDER` you can permanently switch to OpenShift provider without need to always specify `--provider openshift` option.
-If no provider is specified Kubernetes is default provider.
+You can choose a targeted provider using global option `--provider`. If no provider is specified, Kubernetes is set by default.
 
 
-## `kompose convert`
+## Kompose Convert
 
-Currently Kompose supports to transform either Docker Compose file (both of v1 and v2) and [experimental Distributed Application Bundles](https://blog.docker.com/2016/06/docker-app-bundle/) into Kubernetes and OpenShift objects.
-There is a couple of sample files in the `examples/` directory for testing.
-You will convert the compose or dab file to Kubernetes or OpenShift objects with `$ kompose convert`.
+Kompose supports conversion of V1, V2, and V3 Docker Compose files into Kubernetes and OpenShift objects.
 
 ### Kubernetes
-```sh
-$ cd examples/
-
-$ ls
-docker-compose.yml  docker-compose-bundle.dab  docker-gitlab.yml  docker-voting.yml
-
-$ kompose -f docker-gitlab.yml convert
-INFO Kubernetes file "redisio-svc.yaml" created
-INFO Kubernetes file "gitlab-svc.yaml" created
-INFO Kubernetes file "postgresql-svc.yaml" created
-INFO Kubernetes file "gitlab-deployment.yaml" created
-INFO Kubernetes file "postgresql-deployment.yaml" created
-INFO Kubernetes file "redisio-deployment.yaml" created
-
-$ ls *.yaml
-gitlab-deployment.yaml  postgresql-deployment.yaml  redis-deployment.yaml    redisio-svc.yaml  web-deployment.yaml
-gitlab-svc.yaml         postgresql-svc.yaml         redisio-deployment.yaml  redis-svc.yaml    web-svc.yaml
-```
-
-You can try with a Docker Compose version 2 like this:
 
 ```sh
 $ kompose --file docker-voting.yml convert
@@ -62,7 +30,7 @@ INFO Kubernetes file "db-deployment.yaml" created
 
 $ ls
 db-deployment.yaml  docker-compose.yml         docker-gitlab.yml  redis-deployment.yaml  result-deployment.yaml  vote-deployment.yaml  worker-deployment.yaml
-db-svc.yaml         docker-compose-bundle.dab  docker-voting.yml  redis-svc.yaml         result-svc.yaml         vote-svc.yaml         worker-svc.yaml
+db-svc.yaml         docker-voting.yml          redis-svc.yaml     result-svc.yaml        vote-svc.yaml           worker-svc.yaml
 ```
 
 You can also provide multiple docker-compose files at the same time:
@@ -90,17 +58,6 @@ redis-master-deployment.yaml
 
 When multiple docker-compose files are provided the configuration is merged. Any configuration that is common will be over ridden by subsequent file.
  
-Using `--bundle, --dab` to specify a DAB file as below:
-
-```sh
-$ kompose --bundle docker-compose-bundle.dab convert
-WARN: Unsupported key networks - ignoring
-INFO Kubernetes file "redis-svc.yaml" created
-INFO Kubernetes file "web-svc.yaml" created
-INFO Kubernetes file "web-deployment.yaml" created
-INFO Kubernetes file "redis-deployment.yaml" created
-```
-
 ### OpenShift
 
 ```sh
@@ -122,18 +79,6 @@ INFO OpenShift file "result-deploymentconfig.yaml" created
 INFO OpenShift file "result-imagestream.yaml" created  
 ```
 
-In similar way you can convert DAB files to OpenShift.
-```sh
-$ kompose --bundle docker-compose-bundle.dab --provider openshift convert
-WARN: Unsupported key networks - ignoring
-INFO OpenShift file "redis-svc.yaml" created
-INFO OpenShift file "web-svc.yaml" created
-INFO OpenShift file "web-deploymentconfig.yaml" created
-INFO OpenShift file "web-imagestream.yaml" created           
-INFO OpenShift file "redis-deploymentconfig.yaml" created
-INFO OpenShift file "redis-imagestream.yaml" created
-```
-
 It also supports creating buildconfig for build directive in a service. By default, it uses the remote repo for the current git branch as the source repo, and the current branch as the source branch for the build. You can specify a different source repo and branch using ``--build-repo`` and ``--build-branch`` options respectively.
 
 ```sh
@@ -147,7 +92,7 @@ INFO OpenShift file "foo-buildconfig.yaml" created
 
 **Note**: If you are manually pushing the Openshift artifacts using ``oc create -f``, you need to ensure that you push the imagestream artifact before the buildconfig artifact, to workaround this Openshift issue: https://github.com/openshift/origin/issues/4518 .
 
-## `kompose up`
+## Kompose Up
 
 Kompose supports a straightforward way to deploy your "composed" application to Kubernetes or OpenShift via `kompose up`.
 
@@ -224,7 +169,7 @@ is/redis-slave     172.30.12.200:5000/fff/redis-slave    v1
 Note:
 - You must have a running OpenShift cluster with a pre-configured `oc` context (`oc login`)
 
-## `kompose down`
+## Kompose Down
 
 Once you have deployed "composed" application to Kubernetes, `$ kompose down` will help you to take the application out by deleting its deployments and services. If you need to remove other resources, use the 'kubectl' command.
 
@@ -247,7 +192,7 @@ Kompose supports both building and pushing Docker images. When using the `build`
   - Automatically be built with Docker using the `image` key specified within your file
   - Be pushed to the correct Docker repository using local credentials (located at `.docker/config`)
 
-Using an [example Docker Compose file](https://raw.githubusercontent.com/kubernetes-incubator/kompose/master/examples/buildconfig/docker-compose.yml):
+Using an [example Docker Compose file](https://raw.githubusercontent.com/kubernetes/kompose/master/examples/buildconfig/docker-compose.yml):
 
 ```yaml
 version: "2"
@@ -289,7 +234,7 @@ $ kompose up --provider openshift --build build-config
 
 ## Alternative Conversions
 
-The default `kompose` transformation will generate Kubernetes [Deployments](http://kubernetes.io/docs/user-guide/deployments/) and [Services](http://kubernetes.io/docs/user-guide/services/), in yaml format. You have alternative option to generate json with `-j`. Also, you can alternatively generate [Replication Controllers](http://kubernetes.io/docs/user-guide/replication-controller/) objects, [Deamon Sets](http://kubernetes.io/docs/admin/daemons/), or [Helm](https://github.com/helm/helm) charts.
+The default `kompose` transformation will generate Kubernetes [Deployments](http://kubernetes.io/docs/user-guide/deployments/) and [Services](http://kubernetes.io/docs/user-guide/services/), in yaml format. You have alternative option to generate json with `-j`. Also, you can alternatively generate [Replication Controllers](http://kubernetes.io/docs/user-guide/replication-controller/) objects, [Daemon Sets](http://kubernetes.io/docs/admin/daemons/), or [Helm](https://github.com/helm/helm) charts.
 
 ```sh
 $ kompose convert -j
@@ -345,9 +290,23 @@ The chart structure is aimed at providing a skeleton for building your Helm char
 
 ## Labels
 
-`kompose` supports Kompose-specific labels within the `docker-compose.yml` file in order to explicitly define a service's behavior upon conversion.
+`kompose` supports Kompose-specific labels within the `docker-compose.yml` file to
+explicitly define the generated resources' behavior upon conversion, like Service, PersistentVolumeClaim...
 
-- kompose.service.type defines the type of service to be created.
+The currently supported options are:
+
+| Key                  | Value                               |
+|----------------------|-------------------------------------|
+| kompose.service.type | nodeport / clusterip / loadbalancer |
+| kompose.service.expose | true / hostname |
+| kompose.service.expose.tls-secret | secret name |
+| kompose.volume.size | kubernetes supported volume size |
+
+**Note**: `kompose.service.type` label should be defined with `ports` only, otherwise `kompose` will fail.
+
+
+
+- `kompose.service.type` defines the type of service to be created.
 
 For example:
 
@@ -365,9 +324,10 @@ services:
       kompose.service.type: nodeport
 ```
 
-- kompose.service.expose defines if the service needs to be made accessible from outside the cluster or not. If the value is set to "true", the provider sets the endpoint automatically, and for any other value, the value is set as the hostname. If multiple ports are defined in a service, the first one is chosen to be the exposed.
+- `kompose.service.expose` defines if the service needs to be made accessible from outside the cluster or not. If the value is set to "true", the provider sets the endpoint automatically, and for any other value, the value is set as the hostname. If multiple ports are defined in a service, the first one is chosen to be the exposed.
     - For the Kubernetes provider, an ingress resource is created and it is assumed that an ingress controller has already been configured.
     - For the OpenShift provider, a route is created.
+- `kompose.service.expose.tls-secret` provides the name of the TLS secret to use with the Kubernetes ingress controller. This requires kompose.service.expose to be set.
 
 For example:
 
@@ -382,24 +342,32 @@ services:
      - redis
     labels:
       kompose.service.expose: "counter.example.com"
+      kompose.service.expose.tls-secret: "example-secret"
   redis:
     image: redis:3.0
     ports:
      - "6379"
 ```
 
-The currently supported options are:
+- `kompose.volume.size` defines the requests storage's size in the PersistentVolumeClaim
 
-| Key                  | Value                               |
-|----------------------|-------------------------------------|
-| kompose.service.type | nodeport / clusterip / loadbalancer |
-| kompose.service.expose| true / hostname |
+For example:
 
-**Note**: `kompose.service.type` label should be defined with `ports` only, otherwise `kompose` will fail.
+```yaml
+version: '2'
+services:
+  db:
+    image: postgres:10.1
+    labels:
+      kompose.volume.size: 1Gi
+    volumes:
+      - db-data:/var/lib/postgresql/data
+```
+
 
 ## Restart
 
-If you want to create normal pods without controllers you can use `restart` construct of docker-compose to define that. Follow table below to see what heppens on the `restart` value.
+If you want to create normal pods without controllers you can use `restart` construct of docker-compose to define that. Follow table below to see what happens on the `restart` value.
 
 | `docker-compose` `restart` | object created    | Pod `restartPolicy` |
 |----------------------------|-------------------|---------------------|

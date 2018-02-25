@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package app
 import (
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	// install kubernetes api
@@ -34,18 +34,23 @@ import (
 
 	"os"
 
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
-	"github.com/kubernetes-incubator/kompose/pkg/loader"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer/kubernetes"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer/openshift"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/loader"
+	"github.com/kubernetes/kompose/pkg/transformer"
+	"github.com/kubernetes/kompose/pkg/transformer/kubernetes"
+	"github.com/kubernetes/kompose/pkg/transformer/openshift"
 )
 
 const (
 	// DefaultComposeFile name of the file that kompose will use if no file is explicitly set
 	DefaultComposeFile = "docker-compose.yml"
+)
+
+const (
+	ProviderKubernetes = "kubernetes"
+	ProviderOpenshift  = "openshift"
 	// DefaultProvider - provider that will be used if there is no provider was explicitly set
-	DefaultProvider = "kubernetes"
+	DefaultProvider = ProviderKubernetes
 )
 
 var inputFormat = "compose"
@@ -63,7 +68,7 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 
 	// Get the provider
 	provider := cmd.Flags().Lookup("provider").Value.String()
-	log.Debug("Checking validation of provider %s", provider)
+	log.Debugf("Checking validation of provider: %s", provider)
 
 	// OpenShift specific flags
 	deploymentConfig := cmd.Flags().Lookup("deployment-config").Changed
@@ -76,9 +81,13 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 	replicationController := cmd.Flags().Lookup("replication-controller").Changed
 	deployment := cmd.Flags().Lookup("deployment").Changed
 
+	// Get the controller
+	controller := opt.Controller
+	log.Debugf("Checking validation of controller: %s", controller)
+
 	// Check validations against provider flags
 	switch {
-	case provider == "openshift":
+	case provider == ProviderOpenshift:
 		if chart {
 			log.Fatalf("--chart, -c is a Kubernetes only flag")
 		}
@@ -91,7 +100,10 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 		if deployment {
 			log.Fatalf("--deployment, -d is a Kubernetes only flag")
 		}
-	case provider == "kubernetes":
+		if controller == "daemonset" || controller == "replicationcontroller" || controller == "deployment" {
+			log.Fatalf("--controller= daemonset, replicationcontroller or deployment is a Kubernetes only flag")
+		}
+	case provider == ProviderKubernetes:
 		if deploymentConfig {
 			log.Fatalf("--deployment-config is an OpenShift only flag")
 		}
@@ -100,6 +112,9 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 		}
 		if buildBranch {
 			log.Fatalf("--build-branch is an Openshift only flag")
+		}
+		if controller == "deploymentconfig" {
+			log.Fatalf("--controller=deploymentConfig is an OpenShift only flag")
 		}
 	}
 
@@ -118,7 +133,7 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 
 	if len(bundle) > 0 {
 		inputFormat = "bundle"
-		log.Fatalf("DAB / bundle (--bundle | -b) is no longer supported. See issue: https://github.com/kubernetes-incubator/kompose/issues/390")
+		log.Fatalf("DAB / bundle (--bundle | -b) is no longer supported. See issue: https://github.com/kubernetes/kompose/issues/390")
 		opt.InputFiles = []string{bundle}
 	}
 
@@ -133,16 +148,20 @@ func ValidateFlags(bundle string, args []string, cmd *cobra.Command, opt *kobjec
 	if opt.GenerateJSON && opt.GenerateYaml {
 		log.Fatalf("YAML and JSON format cannot be provided at the same time")
 	}
+
+	if opt.Volumes != "persistentVolumeClaim" && opt.Volumes != "emptyDir" {
+		log.Fatal("Unknown Volume type: ", opt.Volumes, ", possible values are: persistentVolumeClaim and emptyDir")
+	}
 }
 
 // ValidateComposeFile validated the compose file provided for conversion
-func ValidateComposeFile(cmd *cobra.Command, opt *kobject.ConvertOptions) {
+func ValidateComposeFile(opt *kobject.ConvertOptions) {
 	if len(opt.InputFiles) == 0 {
 		// Here docker-compose is the input
-		opt.InputFiles = []string{"docker-compose.yml"}
-		_, err := os.Stat("docker-compose.yml")
+		opt.InputFiles = []string{DefaultComposeFile}
+		_, err := os.Stat(DefaultComposeFile)
 		if err != nil {
-			log.Debugf("'docker-compose.yml' not found: %v", err)
+			log.Debugf("'%s' not found: %v", DefaultComposeFile, err)
 			opt.InputFiles = []string{"docker-compose.yaml"}
 			_, err = os.Stat("docker-compose.yaml")
 			if err != nil {
@@ -155,10 +174,9 @@ func ValidateComposeFile(cmd *cobra.Command, opt *kobject.ConvertOptions) {
 func validateControllers(opt *kobject.ConvertOptions) {
 
 	singleOutput := len(opt.OutFile) != 0 || opt.OutFile == "-" || opt.ToStdout
-
-	if opt.Provider == "kubernetes" {
+	if opt.Provider == ProviderKubernetes {
 		// create deployment by default if no controller has been set
-		if !opt.CreateD && !opt.CreateDS && !opt.CreateRC {
+		if !opt.CreateD && !opt.CreateDS && !opt.CreateRC && opt.Controller == "" {
 			opt.CreateD = true
 		}
 		if singleOutput {
@@ -177,7 +195,7 @@ func validateControllers(opt *kobject.ConvertOptions) {
 			}
 		}
 
-	} else if opt.Provider == "openshift" {
+	} else if opt.Provider == ProviderOpenshift {
 		// create deploymentconfig by default if no controller has been set
 		if !opt.CreateDeploymentConfig {
 			opt.CreateDeploymentConfig = true
@@ -298,7 +316,7 @@ func Down(opt kobject.ConvertOptions) {
 // what provider we are using.
 func getTransformer(opt kobject.ConvertOptions) transformer.Transformer {
 	var t transformer.Transformer
-	if opt.Provider == "kubernetes" {
+	if opt.Provider == DefaultProvider {
 		// Create/Init new Kubernetes object with CLI opts
 		t = &kubernetes.Kubernetes{Opt: opt}
 	} else {

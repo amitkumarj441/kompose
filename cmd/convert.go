@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ package cmd
 import (
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
-	"github.com/kubernetes-incubator/kompose/pkg/app"
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/app"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -32,6 +32,7 @@ var (
 	ConvertBuildRepo             string
 	ConvertBuildBranch           string
 	ConvertBuild                 string
+	ConvertVolumes               string
 	ConvertChart                 bool
 	ConvertDeployment            bool
 	ConvertDaemonSet             bool
@@ -43,11 +44,9 @@ var (
 	ConvertInsecureRepo          bool
 	ConvertDeploymentConfig      bool
 	ConvertReplicas              int
+	ConvertController            string
 	ConvertOpt                   kobject.ConvertOptions
 )
-
-// ConvertProvider TODO: comment
-var ConvertProvider = GlobalProvider
 
 var convertCmd = &cobra.Command{
 	Use:   "convert [file]",
@@ -55,8 +54,7 @@ var convertCmd = &cobra.Command{
 	PreRun: func(cmd *cobra.Command, args []string) {
 
 		// Check that build-config wasn't passed in with --provider=kubernetes
-		provider := strings.ToLower(GlobalProvider)
-		if provider == "kubernetes" && UpBuild == "build-config" {
+		if GlobalProvider == "kubernetes" && UpBuild == "build-config" {
 			log.Fatalf("build-config is not a valid --build parameter with provider Kubernetes")
 		}
 
@@ -69,7 +67,7 @@ var convertCmd = &cobra.Command{
 			Replicas:                    ConvertReplicas,
 			InputFiles:                  GlobalFiles,
 			OutFile:                     ConvertOut,
-			Provider:                    strings.ToLower(GlobalProvider),
+			Provider:                    GlobalProvider,
 			CreateD:                     ConvertDeployment,
 			CreateDS:                    ConvertDaemonSet,
 			CreateRC:                    ConvertReplicationController,
@@ -78,16 +76,19 @@ var convertCmd = &cobra.Command{
 			BuildBranch:                 ConvertBuildBranch,
 			CreateDeploymentConfig:      ConvertDeploymentConfig,
 			EmptyVols:                   ConvertEmptyVols,
+			Volumes:                     ConvertVolumes,
 			InsecureRepository:          ConvertInsecureRepo,
 			IsDeploymentFlag:            cmd.Flags().Lookup("deployment").Changed,
 			IsDaemonSetFlag:             cmd.Flags().Lookup("daemon-set").Changed,
 			IsReplicationControllerFlag: cmd.Flags().Lookup("replication-controller").Changed,
+			Controller:                  strings.ToLower(ConvertController),
+			IsReplicaSetFlag:            cmd.Flags().Lookup("replicas").Changed,
 			IsDeploymentConfigFlag:      cmd.Flags().Lookup("deployment-config").Changed,
 		}
 
 		// Validate before doing anything else. Use "bundle" if passed in.
 		app.ValidateFlags(GlobalBundle, args, cmd, &ConvertOpt)
-		app.ValidateComposeFile(cmd, &ConvertOpt)
+		app.ValidateComposeFile(&ConvertOpt)
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 
@@ -105,6 +106,10 @@ func init() {
 	convertCmd.Flags().BoolVar(&ConvertDaemonSet, "daemon-set", false, "Generate a Kubernetes daemonset object")
 	convertCmd.Flags().BoolVarP(&ConvertDeployment, "deployment", "d", false, "Generate a Kubernetes deployment object")
 	convertCmd.Flags().BoolVar(&ConvertReplicationController, "replication-controller", false, "Generate a Kubernetes replication controller object")
+	convertCmd.Flags().StringVar(&ConvertController, "controller", "", `Set the output controller ("deployment"|"daemonSet"|"replicationController")`)
+	convertCmd.Flags().MarkDeprecated("daemon-set", "use --controller")
+	convertCmd.Flags().MarkDeprecated("deployment", "use --controller")
+	convertCmd.Flags().MarkDeprecated("replication-controller", "use --controller")
 	convertCmd.Flags().MarkHidden("chart")
 	convertCmd.Flags().MarkHidden("daemon-set")
 	convertCmd.Flags().MarkHidden("replication-controller")
@@ -115,21 +120,26 @@ func init() {
 	convertCmd.Flags().BoolVar(&ConvertInsecureRepo, "insecure-repository", false, "Use an insecure Docker repository for OpenShift ImageStream")
 	convertCmd.Flags().StringVar(&ConvertBuildRepo, "build-repo", "", "Specify source repository for buildconfig (default remote origin)")
 	convertCmd.Flags().StringVar(&ConvertBuildBranch, "build-branch", "", "Specify repository branch to use for buildconfig (default master)")
+	convertCmd.Flags().MarkDeprecated("deployment-config", "use --controller")
 	convertCmd.Flags().MarkHidden("deployment-config")
 	convertCmd.Flags().MarkHidden("insecure-repository")
 	convertCmd.Flags().MarkHidden("build-repo")
 	convertCmd.Flags().MarkHidden("build-branch")
 
 	// Standard between the two
-	convertCmd.Flags().StringVar(&ConvertBuild, "build", "none", `Set the type of build ("local"|"build-config" (OpenShift only)|"none")`)
+	convertCmd.Flags().StringVar(&ConvertBuild, "build", "none", `Set the type of build ("local"|"build-config"(OpenShift only)|"none")`)
 	convertCmd.Flags().BoolVarP(&ConvertYaml, "yaml", "y", false, "Generate resource files into YAML format")
 	convertCmd.Flags().MarkDeprecated("yaml", "YAML is the default format now.")
 	convertCmd.Flags().MarkShorthandDeprecated("y", "YAML is the default format now.")
 	convertCmd.Flags().BoolVarP(&ConvertJSON, "json", "j", false, "Generate resource files into JSON format")
 	convertCmd.Flags().BoolVar(&ConvertStdout, "stdout", false, "Print converted objects to stdout")
-	convertCmd.Flags().BoolVar(&ConvertEmptyVols, "emptyvols", false, "Use Empty Volumes. Do not generate PVCs")
 	convertCmd.Flags().StringVarP(&ConvertOut, "out", "o", "", "Specify a file name to save objects to")
-	convertCmd.Flags().IntVar(&ConvertReplicas, "replicas", 1, "Specify the number of repliaces in the generate resource spec")
+	convertCmd.Flags().IntVar(&ConvertReplicas, "replicas", 1, "Specify the number of replicas in the generated resource spec")
+	convertCmd.Flags().StringVar(&ConvertVolumes, "volumes", "persistentVolumeClaim", `Volumes to be generated ("persistentVolumeClaim"|"emptyDir")`)
+
+	// Deprecated commands
+	convertCmd.Flags().BoolVar(&ConvertEmptyVols, "emptyvols", false, "Use Empty Volumes. Do not generate PVCs")
+	convertCmd.Flags().MarkDeprecated("emptyvols", "emptyvols has been marked as deprecated. Use --volumes empty")
 
 	// In order to 'separate' both OpenShift and Kubernetes only flags. A custom help page is created
 	customHelp := `Usage:{{if .Runnable}}
@@ -168,7 +178,7 @@ Additional help topics:{{range .Commands}}{{if .IsHelpCommand}}
 Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
 `
 	// Set the help template + add the command to root
-	convertCmd.SetHelpTemplate(customHelp)
+	convertCmd.SetUsageTemplate(customHelp)
 
 	RootCmd.AddCommand(convertCmd)
 }

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2017 The Kubernetes Authors All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ done
 if [ ${#errors[@]} -eq 0 ]; then
 	echo "gofmt OK"
 else
-	echo "gofmt ERROR - These files are not formated by gofmt:"
+	echo "gofmt ERROR - These files are not formatted by gofmt:"
 	for err in "${errors[@]}"; do
 		echo "$err"
 	done

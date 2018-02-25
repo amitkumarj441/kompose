@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/kobject"
 	"github.com/pkg/errors"
 	"k8s.io/kubernetes/pkg/api"
 )
@@ -71,7 +71,6 @@ func loadEnvVars(envars []string) []kobject.EnvVar {
 
 // getComposeFileDir returns compose file directory
 // Assume all the docker-compose files are in the same directory
-// TODO: fix (check if file exists)
 func getComposeFileDir(inputFiles []string) (string, error) {
 	inputFile := inputFiles[0]
 	if strings.Index(inputFile, "/") != 0 {

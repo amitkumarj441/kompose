@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,13 +19,11 @@ package openshift
 import (
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer/kubernetes"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/transformer/kubernetes"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 
 	kapi "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -39,7 +37,9 @@ import (
 
 	"reflect"
 
-	"github.com/kubernetes-incubator/kompose/pkg/transformer"
+	"sort"
+
+	"github.com/kubernetes/kompose/pkg/transformer"
 	buildapi "github.com/openshift/origin/pkg/build/api"
 	buildconfigreaper "github.com/openshift/origin/pkg/build/cmd"
 	deployapi "github.com/openshift/origin/pkg/deploy/api"
@@ -51,7 +51,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/intstr"
-	"sort"
 )
 
 // OpenShift implements Transformer interface and represents OpenShift transformer
@@ -73,84 +72,11 @@ const TIMEOUT = 300
 // by keeping record if already saw this key in another service
 var unsupportedKey = map[string]bool{}
 
-// getImageTag get tag name from image name
-// if no tag is specified return 'latest'
-func getImageTag(image string) string {
-	// format:      registry_host:registry_port/repo_name/image_name:image_tag
-	// example:
-	// 1)     myregistryhost:5000/fedora/httpd:version1.0
-	// 2)     myregistryhost:5000/fedora/httpd
-	// 3)     myregistryhost/fedora/httpd:version1.0
-	// 4)     myregistryhost/fedora/httpd
-	// 5)     fedora/httpd
-	// 6)     httpd
-	imageAndTag := image
-
-	i := strings.Split(image, "/")
-	if len(i) >= 2 {
-		imageAndTag = i[len(i)-1]
-	}
-
-	p := strings.Split(imageAndTag, ":")
-	if len(p) == 2 {
-		return p[1]
-	}
-	return "latest"
-
-}
-
-// hasGitBinary checks if the 'git' binary is available on the system
-func hasGitBinary() bool {
-	_, err := exec.LookPath("git")
-	return err == nil
-}
-
-// getGitCurrentRemoteURL gets current git remote URI for the current git repo
-func getGitCurrentRemoteURL(composeFileDir string) (string, error) {
-	cmd := exec.Command("git", "ls-remote", "--get-url")
-	cmd.Dir = composeFileDir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	url := strings.TrimRight(string(out), "\n")
-
-	if !strings.HasSuffix(url, ".git") {
-		url += ".git"
-	}
-
-	return url, nil
-}
-
-// getGitCurrentBranch gets current git branch name for the current git repo
-func getGitCurrentBranch(composeFileDir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
-	cmd.Dir = composeFileDir
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimRight(string(out), "\n"), nil
-}
-
-// getAbsBuildContext returns build context relative to project root dir
-func getAbsBuildContext(context string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-prefix")
-	cmd.Dir = context
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	//convert output of command to string
-	contextDir := strings.Trim(string(out), "\n")
-	return contextDir, nil
-}
-
 // initImageStream initialize ImageStream object
 func (o *OpenShift) initImageStream(name string, service kobject.ServiceConfig, opt kobject.ConvertOptions) *imageapi.ImageStream {
 
 	// Retrieve tags and image name for mapping
-	tag := getImageTag(service.Image)
+	tag := GetImageTag(service.Image)
 
 	var importPolicy imageapi.TagImportPolicy
 	if opt.InsecureRepository {
@@ -188,7 +114,7 @@ func (o *OpenShift) initImageStream(name string, service kobject.ServiceConfig, 
 }
 
 func initBuildConfig(name string, service kobject.ServiceConfig, repo string, branch string) (*buildapi.BuildConfig, error) {
-	contextDir, err := getAbsBuildContext(service.Build)
+	contextDir, err := GetAbsBuildContext(service.Build)
 	envList := transformer.EnvSort{}
 	for envName, envValue := range service.BuildArgs {
 		if *envValue == "\x00" {
@@ -236,7 +162,7 @@ func initBuildConfig(name string, service kobject.ServiceConfig, repo string, br
 				Output: buildapi.BuildOutput{
 					To: &kapi.ObjectReference{
 						Kind: "ImageStreamTag",
-						Name: name + ":" + getImageTag(service.Image),
+						Name: name + ":" + GetImageTag(service.Image),
 					},
 				},
 			},
@@ -250,7 +176,7 @@ func (o *OpenShift) initDeploymentConfig(name string, service kobject.ServiceCon
 	containerName := []string{name}
 
 	// Properly add tags to the image name
-	tag := getImageTag(service.Image)
+	tag := GetImageTag(service.Image)
 
 	// Use ContainerName if it was set
 	if service.ContainerName != "" {
@@ -347,6 +273,19 @@ func (o *OpenShift) Transform(komposeObject kobject.KomposeObject, opt kobject.C
 		service := komposeObject.ServiceConfigs[name]
 		var objects []runtime.Object
 
+		//replicas
+		var replica int
+		if opt.IsReplicaSetFlag || service.Replicas == 0 {
+			replica = opt.Replicas
+		} else {
+			replica = service.Replicas
+		}
+
+		// If Deploy.Mode = Global has been set, make replica = 1 when generating DeploymentConfig
+		if service.DeployMode == "global" {
+			replica = 1
+		}
+
 		// Must build the images before conversion (got to add service.Image in case 'image' key isn't provided
 		// Check to see if there is an InputFile (required!) before we build the container
 		// Check that there's actually a Build key
@@ -394,7 +333,7 @@ func (o *OpenShift) Transform(komposeObject kobject.KomposeObject, opt kobject.C
 			objects = o.CreateKubernetesObjects(name, service, opt)
 
 			if opt.CreateDeploymentConfig {
-				objects = append(objects, o.initDeploymentConfig(name, service, opt.Replicas)) // OpenShift DeploymentConfigs
+				objects = append(objects, o.initDeploymentConfig(name, service, replica)) // OpenShift DeploymentConfigs
 				// create ImageStream after deployment (creating IS will trigger new deployment)
 				objects = append(objects, o.initImageStream(name, service, opt))
 			}
@@ -411,13 +350,13 @@ func (o *OpenShift) Transform(komposeObject kobject.KomposeObject, opt kobject.C
 				}
 
 				// Check for Git
-				if !hasGitBinary() && (buildRepo == "" || buildBranch == "") {
+				if !HasGitBinary() && (buildRepo == "" || buildBranch == "") {
 					return nil, errors.New("Git is not installed! Please install Git to create buildconfig, else supply source repository and branch to use for build using '--build-repo', '--build-branch' options respectively")
 				}
 
 				// Check the Git branch
 				if buildBranch == "" {
-					buildBranch, err = getGitCurrentBranch(composeFileDir)
+					buildBranch, err = GetGitCurrentBranch(composeFileDir)
 					if err != nil {
 						return nil, errors.Wrap(err, "Buildconfig cannot be created because current git branch couldn't be detected.")
 					}
@@ -428,7 +367,7 @@ func (o *OpenShift) Transform(komposeObject kobject.KomposeObject, opt kobject.C
 					if err != nil {
 						return nil, errors.Wrap(err, "Buildconfig cannot be created because remote for current git branch couldn't be detected.")
 					}
-					buildRepo, err = getGitCurrentRemoteURL(composeFileDir)
+					buildRepo, err = GetGitCurrentRemoteURL(composeFileDir)
 					if err != nil {
 						return nil, errors.Wrap(err, "Buildconfig cannot be created because git remote origin repo couldn't be detected.")
 					}
@@ -459,15 +398,15 @@ func (o *OpenShift) Transform(komposeObject kobject.KomposeObject, opt kobject.C
 			}
 		}
 
-		// Update and then append the objects (we're done generating)
-		o.UpdateKubernetesObjects(name, service, &objects)
+		err := o.UpdateKubernetesObjects(name, service, opt, &objects)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error transforming Kubernetes objects")
+		}
+
 		allobjects = append(allobjects, objects...)
 	}
 
-	// If docker-compose has a volumes_from directive it will be handled here
-	o.VolumesFrom(&allobjects, komposeObject)
-
-	// sort all object so all services are first
+	// sort all object so Services are first
 	o.SortServicesFirst(&allobjects)
 
 	return allobjects, nil
@@ -482,11 +421,11 @@ func (o *OpenShift) getOpenShiftClient() (*oclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	oclient := oclient.NewOrDie(oclientConfig)
-	return oclient, nil
+	oc := oclient.NewOrDie(oclientConfig)
+	return oc, nil
 }
 
-// Deploy transofrms and deploys kobject to OpenShift
+// Deploy transforms and deploys kobject to OpenShift
 func (o *OpenShift) Deploy(komposeObject kobject.KomposeObject, opt kobject.ConvertOptions) error {
 	//Convert komposeObject
 	objects, err := o.Transform(komposeObject, opt)
@@ -496,13 +435,13 @@ func (o *OpenShift) Deploy(komposeObject kobject.KomposeObject, opt kobject.Conv
 	}
 
 	pvcStr := " "
-	if !opt.EmptyVols {
+	if !opt.EmptyVols || opt.Volumes != "emptyDir" {
 		pvcStr = " and PersistentVolumeClaims "
 	}
 	log.Info("We are going to create OpenShift DeploymentConfigs, Services" + pvcStr + "for your Dockerized application. \n" +
 		"If you need different kind of resources, use the 'kompose convert' and 'oc create -f' commands instead. \n")
 
-	oclient, err := o.getOpenShiftClient()
+	oc, err := o.getOpenShiftClient()
 	if err != nil {
 		return err
 	}
@@ -520,19 +459,19 @@ func (o *OpenShift) Deploy(komposeObject kobject.KomposeObject, opt kobject.Conv
 	for _, v := range objects {
 		switch t := v.(type) {
 		case *imageapi.ImageStream:
-			_, err := oclient.ImageStreams(namespace).Create(t)
+			_, err := oc.ImageStreams(namespace).Create(t)
 			if err != nil {
 				return err
 			}
 			log.Infof("Successfully created ImageStream: %s", t.Name)
 		case *buildapi.BuildConfig:
-			_, err := oclient.BuildConfigs(namespace).Create(t)
+			_, err := oc.BuildConfigs(namespace).Create(t)
 			if err != nil {
 				return err
 			}
 			log.Infof("Successfully created BuildConfig: %s", t.Name)
 		case *deployapi.DeploymentConfig:
-			_, err := oclient.DeploymentConfigs(namespace).Create(t)
+			_, err := oc.DeploymentConfigs(namespace).Create(t)
 			if err != nil {
 				return err
 			}
@@ -550,7 +489,7 @@ func (o *OpenShift) Deploy(komposeObject kobject.KomposeObject, opt kobject.Conv
 			}
 			log.Infof("Successfully created PersistentVolumeClaim: %s of size %s. If your cluster has dynamic storage provisioning, you don't have to do anything. Otherwise you have to create PersistentVolume to make PVC work", t.Name, kubernetes.PVCRequestSize)
 		case *routeapi.Route:
-			_, err := oclient.Routes(namespace).Create(t)
+			_, err := oc.Routes(namespace).Create(t)
 			if err != nil {
 				return err
 			}
@@ -564,7 +503,7 @@ func (o *OpenShift) Deploy(komposeObject kobject.KomposeObject, opt kobject.Conv
 		}
 	}
 
-	if !opt.EmptyVols {
+	if !opt.EmptyVols || opt.Volumes != "emptyDir" {
 		pvcStr = ",pvc"
 	} else {
 		pvcStr = ""
@@ -584,7 +523,7 @@ func (o *OpenShift) Undeploy(komposeObject kobject.KomposeObject, opt kobject.Co
 		errorList = append(errorList, err)
 		return errorList
 	}
-	oclient, err := o.getOpenShiftClient()
+	oc, err := o.getOpenShiftClient()
 	if err != nil {
 		errorList = append(errorList, err)
 		return errorList
@@ -608,14 +547,14 @@ func (o *OpenShift) Undeploy(komposeObject kobject.KomposeObject, opt kobject.Co
 		switch t := v.(type) {
 		case *imageapi.ImageStream:
 			//delete imageStream
-			imageStream, err := oclient.ImageStreams(namespace).List(options)
+			imageStream, err := oc.ImageStreams(namespace).List(options)
 			if err != nil {
 				errorList = append(errorList, err)
 				break
 			}
 			for _, l := range imageStream.Items {
 				if reflect.DeepEqual(l.Labels, komposeLabel) {
-					err = oclient.ImageStreams(namespace).Delete(t.Name)
+					err = oc.ImageStreams(namespace).Delete(t.Name)
 					if err != nil {
 						errorList = append(errorList, err)
 						break
@@ -625,14 +564,14 @@ func (o *OpenShift) Undeploy(komposeObject kobject.KomposeObject, opt kobject.Co
 			}
 
 		case *buildapi.BuildConfig:
-			buildConfig, err := oclient.BuildConfigs(namespace).List(options)
+			buildConfig, err := oc.BuildConfigs(namespace).List(options)
 			if err != nil {
 				errorList = append(errorList, err)
 				break
 			}
 			for _, l := range buildConfig.Items {
 				if reflect.DeepEqual(l.Labels, komposeLabel) {
-					bcreaper := buildconfigreaper.NewBuildConfigReaper(oclient)
+					bcreaper := buildconfigreaper.NewBuildConfigReaper(oc)
 					err := bcreaper.Stop(namespace, t.Name, TIMEOUT*time.Second, nil)
 					if err != nil {
 						errorList = append(errorList, err)
@@ -644,14 +583,14 @@ func (o *OpenShift) Undeploy(komposeObject kobject.KomposeObject, opt kobject.Co
 
 		case *deployapi.DeploymentConfig:
 			// delete deploymentConfig
-			deploymentConfig, err := oclient.DeploymentConfigs(namespace).List(options)
+			deploymentConfig, err := oc.DeploymentConfigs(namespace).List(options)
 			if err != nil {
 				errorList = append(errorList, err)
 				break
 			}
 			for _, l := range deploymentConfig.Items {
 				if reflect.DeepEqual(l.Labels, komposeLabel) {
-					dcreaper := deploymentconfigreaper.NewDeploymentConfigReaper(oclient, kclient)
+					dcreaper := deploymentconfigreaper.NewDeploymentConfigReaper(oc, kclient)
 					err := dcreaper.Stop(namespace, t.Name, TIMEOUT*time.Second, nil)
 					if err != nil {
 						errorList = append(errorList, err)
@@ -705,14 +644,14 @@ func (o *OpenShift) Undeploy(komposeObject kobject.KomposeObject, opt kobject.Co
 
 		case *routeapi.Route:
 			// delete route
-			route, err := oclient.Routes(namespace).List(options)
+			route, err := oc.Routes(namespace).List(options)
 			if err != nil {
 				errorList = append(errorList, err)
 				break
 			}
 			for _, l := range route.Items {
 				if reflect.DeepEqual(l.Labels, komposeLabel) {
-					err = oclient.Routes(namespace).Delete(t.Name)
+					err = oc.Routes(namespace).Delete(t.Name)
 					if err != nil {
 						errorList = append(errorList, err)
 						break

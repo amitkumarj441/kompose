@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,10 +26,10 @@ import (
 
 	deployapi "github.com/openshift/origin/pkg/deploy/api"
 
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
-	"github.com/kubernetes-incubator/kompose/pkg/testutils"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer/kubernetes"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/testutils"
+	"github.com/kubernetes/kompose/pkg/transformer"
+	"github.com/kubernetes/kompose/pkg/transformer/kubernetes"
 	"github.com/pkg/errors"
 )
 
@@ -42,7 +42,7 @@ func newServiceConfig() kobject.ServiceConfig {
 		Command:       []string{"cmd"},
 		WorkingDir:    "dir",
 		Args:          []string{"arg1", "arg2"},
-		Volumes:       []string{"/tmp/volume"},
+		VolList:       []string{"/tmp/volume"},
 		Network:       []string{"network1", "network2"}, // not supported
 		Labels:        nil,
 		Annotations:   map[string]string{"abc": "def"},
@@ -62,9 +62,10 @@ func TestOpenShiftUpdateKubernetesObjects(t *testing.T) {
 	var object []runtime.Object
 	o := OpenShift{}
 	serviceConfig := newServiceConfig()
+	opt := kobject.ConvertOptions{}
 
 	object = append(object, o.initDeploymentConfig("foobar", serviceConfig, 3))
-	o.UpdateKubernetesObjects("foobar", serviceConfig, &object)
+	o.UpdateKubernetesObjects("foobar", serviceConfig, opt, &object)
 
 	for _, obj := range object {
 		switch tobj := obj.(type) {
@@ -150,7 +151,7 @@ func TestGetGitRemote(t *testing.T) {
 
 	for name, test := range testCases {
 		t.Log("Test case: ", name)
-		output, err = getGitCurrentRemoteURL(test.dir)
+		output, err = GetGitCurrentRemoteURL(test.dir)
 
 		if test.expectError {
 			if err == nil {
@@ -190,7 +191,7 @@ func TestGitGetCurrentBranch(t *testing.T) {
 
 	for name, test := range testCases {
 		t.Log("Test case: ", name)
-		output, err = getGitCurrentBranch(test.dir)
+		output, err = GetGitCurrentBranch(test.dir)
 
 		if test.expectError {
 			if err == nil {
@@ -263,7 +264,7 @@ func TestGetAbsBuildContext(t *testing.T) {
 
 	for name, test := range testCases {
 		t.Log("Test case: ", name)
-		output, err = getAbsBuildContext(test.context)
+		output, err = GetAbsBuildContext(test.context)
 
 		if test.expectError {
 			if err == nil {
@@ -331,7 +332,7 @@ func TestInitBuildConfig(t *testing.T) {
 			"Assert buildconfig source git Ref":     {bc.Spec.CommonSpec.Source.Git.Ref, branch},
 			"Assert buildconfig source context dir": {bc.Spec.CommonSpec.Source.ContextDir, testDir + "/"},
 			// BuildConfig output image is named after service name. If image key is set than tag from that is used.
-			"Assert buildconfig output name":    {bc.Spec.CommonSpec.Output.To.Name, serviceName + ":" + getImageTag(test.ServiceConfig.Image)},
+			"Assert buildconfig output name":    {bc.Spec.CommonSpec.Output.To.Name, serviceName + ":" + GetImageTag(test.ServiceConfig.Image)},
 			"Assert buildconfig dockerfilepath": {bc.Spec.CommonSpec.Strategy.DockerStrategy.DockerfilePath, test.ServiceConfig.Dockerfile},
 		}
 
@@ -406,7 +407,8 @@ func TestRecreateStrategyWithVolumesPresent(t *testing.T) {
 	service := kobject.ServiceConfig{
 		ContainerName: "name",
 		Image:         "image",
-		Volumes:       []string{"/tmp/volume"},
+		VolList:       []string{"/tmp/volume"},
+		Volumes:       []kobject.Volumes{{SvcName: "app", MountPath: "/tmp/volume", PVCName: "app-claim0"}},
 	}
 	komposeObject := kobject.KomposeObject{
 		ServiceConfigs: map[string]kobject.ServiceConfig{"app": service},

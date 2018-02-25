@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +34,7 @@ Will load the shell completion code.
 	},
 }
 
-// Generate the the approriate autocompletion file
+// Generate the appropriate autocompletion file
 func Generate(cmd *cobra.Command, args []string) error {
 
 	// Check the passed in arguments
@@ -45,8 +45,6 @@ func Generate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("Too many arguments. Expected only the shell type. ex. kompose completion [bash|zsh]")
 	}
 	shell := args[0]
-	if shell != "bash" && shell != "zsh" {
-	}
 
 	// Generate bash through cobra if selected
 	if shell == "bash" {

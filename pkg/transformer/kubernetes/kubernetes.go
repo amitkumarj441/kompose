@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,12 +22,12 @@ import (
 	"strconv"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/fatih/structs"
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/transformer"
 	buildapi "github.com/openshift/origin/pkg/build/api"
 	deployapi "github.com/openshift/origin/pkg/deploy/api"
+	log "github.com/sirupsen/logrus"
 
 	// install kubernetes api
 	_ "k8s.io/kubernetes/pkg/api/install"
@@ -45,10 +45,12 @@ import (
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/intstr"
 	//"k8s.io/kubernetes/pkg/controller/daemon"
+	"sort"
+	"strings"
+
 	"github.com/pkg/errors"
 	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/labels"
-	"sort"
 )
 
 // Kubernetes implements Transformer interface and represents Kubernetes transformer
@@ -61,11 +63,11 @@ type Kubernetes struct {
 // used when undeploying resources from kubernetes
 const TIMEOUT = 300
 
-//default size of Persistent Volume Claim
+// PVCRequestSize (Persistent Volume Claim) has default size
 const PVCRequestSize = "100Mi"
 
 // CheckUnsupportedKey checks if given komposeObject contains
-// keys that are not supported by this tranfomer.
+// keys that are not supported by this transformer.
 // list of all unsupported keys are stored in unsupportedKey variable
 // returns list of TODO: ....
 func (k *Kubernetes) CheckUnsupportedKey(komposeObject *kobject.KomposeObject, unsupportedKey map[string]bool) []string {
@@ -138,7 +140,7 @@ func (k *Kubernetes) InitRC(name string, service kobject.ServiceConfig, replicas
 	return rc
 }
 
-// InitSvc initializes Kubernets Service object
+// InitSvc initializes Kubernetes Service object
 func (k *Kubernetes) InitSvc(name string, service kobject.ServiceConfig) *api.Service {
 	svc := &api.Service{
 		TypeMeta: unversioned.TypeMeta{
@@ -154,6 +156,34 @@ func (k *Kubernetes) InitSvc(name string, service kobject.ServiceConfig) *api.Se
 		},
 	}
 	return svc
+}
+
+// InitConfigMap initialized a ConfigMap object
+func (k *Kubernetes) InitConfigMap(name string, service kobject.ServiceConfig, opt kobject.ConvertOptions, envFile string) *api.ConfigMap {
+
+	envs, err := GetEnvsFromFile(envFile, opt)
+	if err != nil {
+		log.Fatalf("Unable to retrieve env file: %s", err)
+	}
+
+	// Remove root pathing
+	// replace all other slashes / preiods
+	envName := FormatEnvName(envFile)
+
+	// In order to differentiate files, we append to the name and remove '.env' if applicate from the file name
+	configMap := &api.ConfigMap{
+		TypeMeta: unversioned.TypeMeta{
+			Kind:       "ConfigMap",
+			APIVersion: "v1",
+		},
+		ObjectMeta: api.ObjectMeta{
+			Name:   name + "-" + envName,
+			Labels: transformer.ConfigLabels(name + "-" + envName),
+		},
+		Data: envs,
+	}
+
+	return configMap
 }
 
 // InitD initializes Kubernetes Deployment object
@@ -233,13 +263,23 @@ func (k *Kubernetes) initIngress(name string, service kobject.ServiceConfig, por
 	if service.ExposeService != "true" {
 		ingress.Spec.Rules[0].Host = service.ExposeService
 	}
+	if service.ExposeServiceTLS != "" {
+		ingress.Spec.TLS = []extensions.IngressTLS{
+			{
+				Hosts: []string{
+					service.ExposeService,
+				},
+				SecretName: service.ExposeServiceTLS,
+			},
+		}
+	}
 
 	return ingress
 }
 
 // CreatePVC initializes PersistentVolumeClaim
-func (k *Kubernetes) CreatePVC(name string, mode string) (*api.PersistentVolumeClaim, error) {
-	size, err := resource.ParseQuantity(PVCRequestSize)
+func (k *Kubernetes) CreatePVC(name string, mode string, size string) (*api.PersistentVolumeClaim, error) {
+	volsize, err := resource.ParseQuantity(size)
 	if err != nil {
 		return nil, errors.Wrap(err, "resource.ParseQuantity failed, Error parsing size")
 	}
@@ -256,7 +296,7 @@ func (k *Kubernetes) CreatePVC(name string, mode string) (*api.PersistentVolumeC
 		Spec: api.PersistentVolumeClaimSpec{
 			Resources: api.ResourceRequirements{
 				Requests: api.ResourceList{
-					api.ResourceStorage: size,
+					api.ResourceStorage: volsize,
 				},
 			},
 		},
@@ -350,7 +390,7 @@ func (k *Kubernetes) ConfigTmpfs(name string, service kobject.ServiceConfig) ([]
 	for index, volume := range service.TmpFs {
 		//naming volumes if multiple tmpfs are provided
 		volumeName := fmt.Sprintf("%s-tmpfs%d", name, index)
-
+		volume = strings.Split(volume, ":")[0]
 		// create a new volume mount object and append to list
 		volMount := api.VolumeMount{
 			Name:      volumeName,
@@ -376,56 +416,65 @@ func (k *Kubernetes) ConfigVolumes(name string, service kobject.ServiceConfig) (
 	volumeMounts := []api.VolumeMount{}
 	volumes := []api.Volume{}
 	var PVCs []*api.PersistentVolumeClaim
+	var volumeName string
 
-	// Set a var based on if the user wants to use emtpy volumes
+	// Set a var based on if the user wants to use empty volumes
 	// as opposed to persistent volumes and volume claims
 	useEmptyVolumes := k.Opt.EmptyVols
 
+	if k.Opt.Volumes == "emptyDir" {
+		useEmptyVolumes = true
+	}
+
 	var count int
+	//interating over array of `Vols` struct as it contains all necessary information about volumes
 	for _, volume := range service.Volumes {
 
-		volumeName, host, container, mode, err := transformer.ParseVolume(volume)
-		if err != nil {
-			log.Warningf("Failed to configure container volume: %v", err)
-			continue
-		}
-
-		log.Debug("Volume name %s", volumeName)
-
 		// check if ro/rw mode is defined, default rw
-		readonly := len(mode) > 0 && mode == "ro"
+		readonly := len(volume.Mode) > 0 && volume.Mode == "ro"
 
-		if volumeName == "" {
+		if volume.VolumeName == "" {
 			if useEmptyVolumes {
-				volumeName = fmt.Sprintf("%s-empty%d", name, count)
+				volumeName = strings.Replace(volume.PVCName, "claim", "empty", 1)
 			} else {
-				volumeName = fmt.Sprintf("%s-claim%d", name, count)
+				volumeName = volume.PVCName
 			}
 			count++
+		} else {
+			volumeName = volume.VolumeName
 		}
-
-		// create a new volume mount object and append to list
 		volmount := api.VolumeMount{
 			Name:      volumeName,
 			ReadOnly:  readonly,
-			MountPath: container,
+			MountPath: volume.Container,
 		}
 		volumeMounts = append(volumeMounts, volmount)
-
 		// Get a volume source based on the type of volume we are using
 		// For PVC we will also create a PVC object and add to list
 		var volsource *api.VolumeSource
+
 		if useEmptyVolumes {
 			volsource = k.ConfigEmptyVolumeSource("volume")
 		} else {
+
 			volsource = k.ConfigPVCVolumeSource(volumeName, readonly)
+			if volume.VFrom == "" {
+				defaultSize := PVCRequestSize
 
-			createdPVC, err := k.CreatePVC(volumeName, mode)
-			if err != nil {
-				return nil, nil, nil, errors.Wrap(err, "k.CreatePVC failed")
+				for key, value := range service.Labels {
+					if key == "kompose.volume.size" {
+						defaultSize = value
+					}
+				}
+
+				createdPVC, err := k.CreatePVC(volumeName, volume.Mode, defaultSize)
+
+				if err != nil {
+					return nil, nil, nil, errors.Wrap(err, "k.CreatePVC failed")
+				}
+
+				PVCs = append(PVCs, createdPVC)
 			}
-
-			PVCs = append(PVCs, createdPVC)
 		}
 
 		// create a new volume object using the volsource and add to list
@@ -435,10 +484,12 @@ func (k *Kubernetes) ConfigVolumes(name string, service kobject.ServiceConfig) (
 		}
 		volumes = append(volumes, vol)
 
-		if len(host) > 0 {
-			log.Warningf("Volume mount on the host %q isn't supported - ignoring path on the host", host)
+		if len(volume.Host) > 0 {
+			log.Warningf("Volume mount on the host %q isn't supported - ignoring path on the host", volume.Host)
 		}
+
 	}
+
 	return volumeMounts, volumes, PVCs, nil
 }
 
@@ -471,33 +522,92 @@ func (k *Kubernetes) ConfigPVCVolumeSource(name string, readonly bool) *api.Volu
 }
 
 // ConfigEnvs configures the environment variables.
-func (k *Kubernetes) ConfigEnvs(name string, service kobject.ServiceConfig) []api.EnvVar {
+func (k *Kubernetes) ConfigEnvs(name string, service kobject.ServiceConfig, opt kobject.ConvertOptions) ([]api.EnvVar, error) {
+
 	envs := transformer.EnvSort{}
-	for _, v := range service.Environment {
-		envs = append(envs, api.EnvVar{
-			Name:  v.Name,
-			Value: v.Value,
-		})
+
+	// If there is an env_file, use ConfigMaps and ignore the environment variables
+	// already specified
+	if len(service.EnvFile) > 0 {
+
+		// Load each env_file
+
+		for _, file := range service.EnvFile {
+
+			envName := FormatEnvName(file)
+
+			// Load environment variables from file
+			envLoad, err := GetEnvsFromFile(file, opt)
+			if err != nil {
+				return envs, errors.Wrap(err, "Unable to read env_file")
+			}
+
+			// Add configMapKeyRef to each environment variable
+			for k, _ := range envLoad {
+				envs = append(envs, api.EnvVar{
+					Name: k,
+					ValueFrom: &api.EnvVarSource{
+						ConfigMapKeyRef: &api.ConfigMapKeySelector{
+							LocalObjectReference: api.LocalObjectReference{
+								Name: name + "-" + envName,
+							},
+							Key: k,
+						}},
+				})
+			}
+
+		}
+
+	} else {
+
+		// Load up the environment variables
+		for _, v := range service.Environment {
+			envs = append(envs, api.EnvVar{
+				Name:  v.Name,
+				Value: v.Value,
+			})
+		}
+
 	}
+
 	// Stable sorts data while keeping the original order of equal elements
 	// we need this because envs are not populated in any random order
 	// this sorting ensures they are populated in a particular order
 	sort.Stable(envs)
-	return envs
+	return envs, nil
 }
 
 // CreateKubernetesObjects generates a Kubernetes artifact for each input type service
 func (k *Kubernetes) CreateKubernetesObjects(name string, service kobject.ServiceConfig, opt kobject.ConvertOptions) []runtime.Object {
 	var objects []runtime.Object
+	var replica int
 
-	if opt.CreateD {
-		objects = append(objects, k.InitD(name, service, opt.Replicas))
+	if opt.IsReplicaSetFlag || service.Replicas == 0 {
+		replica = opt.Replicas
+	} else {
+		replica = service.Replicas
 	}
-	if opt.CreateDS {
+
+	// Check to see if Docker Compose v3 Deploy.Mode has been set to "global"
+	if service.DeployMode == "global" {
+		log.Warning("Global mode not yet supported, containers will only be replicated once throughout the cluster. DaemonSet support will be added in the future.")
+		replica = 1
+	}
+	if opt.CreateD || opt.Controller == "deployment" {
+		objects = append(objects, k.InitD(name, service, replica))
+	}
+	if opt.CreateDS || opt.Controller == "daemonset" {
 		objects = append(objects, k.InitDS(name, service))
 	}
-	if opt.CreateRC {
-		objects = append(objects, k.InitRC(name, service, opt.Replicas))
+	if opt.CreateRC || opt.Controller == "replicationcontroller" {
+		objects = append(objects, k.InitRC(name, service, replica))
+	}
+
+	if len(service.EnvFile) > 0 {
+		for _, envFile := range service.EnvFile {
+			configMap := k.InitConfigMap(name, service, opt, envFile)
+			objects = append(objects, configMap)
+		}
 	}
 
 	return objects
@@ -593,12 +703,14 @@ func (k *Kubernetes) Transform(komposeObject kobject.KomposeObject, opt kobject.
 			}
 		}
 
-		k.UpdateKubernetesObjects(name, service, &objects)
+		err := k.UpdateKubernetesObjects(name, service, opt, &objects)
+		if err != nil {
+			return nil, errors.Wrap(err, "Error transforming Kubernetes objects")
+		}
 
 		allobjects = append(allobjects, objects...)
 	}
-	// If docker-compose has a volumes_from directive it will be handled here
-	k.VolumesFrom(&allobjects, komposeObject)
+
 	// sort all object so Services are first
 	k.SortServicesFirst(&allobjects)
 	return allobjects, nil
@@ -679,7 +791,7 @@ func (k *Kubernetes) Deploy(komposeObject kobject.KomposeObject, opt kobject.Con
 	}
 
 	pvcStr := " "
-	if !opt.EmptyVols {
+	if !opt.EmptyVols || opt.Volumes != "emptyDir" {
 		pvcStr = " and PersistentVolumeClaims "
 	}
 	log.Info("We are going to create Kubernetes Deployments, Services" + pvcStr + "for your Dockerized application. " +
@@ -704,6 +816,21 @@ func (k *Kubernetes) Deploy(komposeObject kobject.KomposeObject, opt kobject.Con
 				return err
 			}
 			log.Infof("Successfully created Deployment: %s", t.Name)
+
+		case *extensions.DaemonSet:
+			_, err := client.DaemonSets(namespace).Create(t)
+			if err != nil {
+				return err
+			}
+			log.Infof("Successfully created DaemonSet: %s", t.Name)
+
+		case *api.ReplicationController:
+			_, err := client.ReplicationControllers(namespace).Create(t)
+			if err != nil {
+				return err
+			}
+			log.Infof("Successfully created ReplicationController: %s", t.Name)
+
 		case *api.Service:
 			_, err := client.Services(namespace).Create(t)
 			if err != nil {
@@ -728,10 +855,16 @@ func (k *Kubernetes) Deploy(komposeObject kobject.KomposeObject, opt kobject.Con
 				return err
 			}
 			log.Infof("Successfully created Pod: %s", t.Name)
+		case *api.ConfigMap:
+			_, err := client.ConfigMaps(namespace).Create(t)
+			if err != nil {
+				return err
+			}
+			log.Infof("Successfully created Config Map: %s", t.Name)
 		}
 	}
 
-	if !opt.EmptyVols {
+	if !opt.EmptyVols || opt.Volumes != "emptyDir" {
 		pvcStr = ",pvc"
 	} else {
 		pvcStr = ""
@@ -790,6 +923,56 @@ func (k *Kubernetes) Undeploy(komposeObject kobject.KomposeObject, opt kobject.C
 						break
 					}
 					log.Infof("Successfully deleted Deployment: %s", t.Name)
+
+				}
+			}
+
+		case *extensions.DaemonSet:
+			//delete deployment
+			daemonset, err := client.DaemonSets(namespace).List(options)
+			if err != nil {
+				errorList = append(errorList, err)
+				break
+			}
+			for _, l := range daemonset.Items {
+				if reflect.DeepEqual(l.Labels, komposeLabel) {
+					rpDaemonset, err := kubectl.ReaperFor(extensions.Kind("DaemonSet"), client)
+					if err != nil {
+						errorList = append(errorList, err)
+						break
+					}
+					//FIXME: gracePeriod is nil
+					err = rpDaemonset.Stop(namespace, t.Name, TIMEOUT*time.Second, nil)
+					if err != nil {
+						errorList = append(errorList, err)
+						break
+					}
+					log.Infof("Successfully deleted DaemonSet: %s", t.Name)
+
+				}
+			}
+
+		case *api.ReplicationController:
+			//delete deployment
+			replicationController, err := client.ReplicationControllers(namespace).List(options)
+			if err != nil {
+				errorList = append(errorList, err)
+				break
+			}
+			for _, l := range replicationController.Items {
+				if reflect.DeepEqual(l.Labels, komposeLabel) {
+					rpReplicationController, err := kubectl.ReaperFor(api.Kind("ReplicationController"), client)
+					if err != nil {
+						errorList = append(errorList, err)
+						break
+					}
+					//FIXME: gracePeriod is nil
+					err = rpReplicationController.Stop(namespace, t.Name, TIMEOUT*time.Second, nil)
+					if err != nil {
+						errorList = append(errorList, err)
+						break
+					}
+					log.Infof("Successfully deleted ReplicationController: %s", t.Name)
 
 				}
 			}
@@ -882,6 +1065,24 @@ func (k *Kubernetes) Undeploy(komposeObject kobject.KomposeObject, opt kobject.C
 						break
 					}
 					log.Infof("Successfully deleted Pod: %s", t.Name)
+				}
+			}
+
+		case *api.ConfigMap:
+			// delete ConfigMap
+			configMap, err := client.ConfigMaps(namespace).List(options)
+			if err != nil {
+				errorList = append(errorList, err)
+				break
+			}
+			for _, l := range configMap.Items {
+				if reflect.DeepEqual(l.Labels, komposeLabel) {
+					err = client.ConfigMaps(namespace).Delete(t.Name)
+					if err != nil {
+						errorList = append(errorList, err)
+						break
+					}
+					log.Infof("Successfully deleted ConfigMap: %s", t.Name)
 				}
 			}
 		}

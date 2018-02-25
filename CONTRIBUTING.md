@@ -21,8 +21,8 @@ Contact one of the [OWNERS](OWNERS) on Slack to access the appropriate CLA and i
 4. Fork the desired repo, develop and test your code changes.
 5. Submit a pull request.
 
-Note: Code-related PR's require two ACK's / LGTM's from a maintainer while doc-related PR's require only one
+Note: Code-related PR's require one ACK / LGTM from a maintainer or core contributor. Doc-related PR's require either one or none depending on the content changed (for example, a spec change would require one, but a spelling error would require none).
 
 ### Adding dependencies
 
-If your patch depends on new packages, add that package with [`glide`](https://github.com/Masterminds/glide). Follow the [instructions to add a dependency](https://github.com/kubernetes-incubator/kompose/blob/master/docs/development.md#glide-glide-vc-and-dependency-management).
+If your patch depends on new packages, add that package with [`glide`](https://github.com/Masterminds/glide). Follow the [instructions to add a dependency](https://github.com/kubernetes/kompose/blob/master/docs/development.md#glide-glide-vc-and-dependency-management).

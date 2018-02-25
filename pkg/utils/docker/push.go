@@ -18,18 +18,19 @@ package docker
 
 import (
 	"bytes"
-	log "github.com/Sirupsen/logrus"
 	dockerlib "github.com/fsouza/go-dockerclient"
 	"github.com/novln/docker-parser"
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 )
 
+// Push will provide methods for interaction with API regarding pushing images
 type Push struct {
 	Client dockerlib.Client
 }
 
 /*
-Push a Docker image via the Docker API. Takes the image name,
+PushImage push a Docker image via the Docker API. Takes the image name,
 parses the URL details and then push based on environment authentication
 credentials.
 */
@@ -48,7 +49,7 @@ func (c *Push) PushImage(fullImageName string) error {
 
 	// Let's setup the push and authentication options
 	options := dockerlib.PushImageOptions{
-		Name:         parsedImage.Name(),
+		Name:         fullImageName,
 		Registry:     parsedImage.Registry(),
 		OutputStream: outputBuffer,
 	}
@@ -58,7 +59,17 @@ func (c *Push) PushImage(fullImageName string) error {
 	// $DOCKER_CONFIG/config.json, $HOME/.docker/config.json , $HOME/.dockercfg
 	credentials, err := dockerlib.NewAuthConfigurationsFromDockerCfg()
 	if err != nil {
-		return errors.Wrap(err, "Unable to retrieve .docker/config.json authentication details. Check that 'docker login' works successfully on the command line.")
+		log.Warn(errors.Wrap(err, "Unable to retrieve .docker/config.json authentication details. Check that 'docker login' works successfully on the command line."))
+	}
+
+	// Fallback to unauthenticated access in case if no auth credentials are retrieved
+	if credentials == nil || len(credentials.Configs) == 0 {
+		log.Info("Authentication credentials are not detected. Will try push without authentication.")
+		credentials = &dockerlib.AuthConfigurations{
+			Configs: map[string]dockerlib.AuthConfiguration{
+				registry: {},
+			},
+		}
 	}
 
 	// Push the image to the repository (based on the URL)
@@ -80,5 +91,5 @@ func (c *Push) PushImage(fullImageName string) error {
 		}
 	}
 
-	return errors.New("Unable to push docker image(s). Check that `docker login` works successfully on the command line.")
+	return errors.New("unable to push docker image(s). Check that `docker login` works successfully on the command line")
 }

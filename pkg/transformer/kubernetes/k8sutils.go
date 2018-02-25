@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -29,10 +30,11 @@ import (
 	"text/template"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/ghodss/yaml"
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
-	"github.com/kubernetes-incubator/kompose/pkg/transformer"
+	"github.com/joho/godotenv"
+	"github.com/kubernetes/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/transformer"
+	log "github.com/sirupsen/logrus"
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -330,9 +332,13 @@ func (k *Kubernetes) CreateHeadlessService(name string, service kobject.ServiceC
 }
 
 // UpdateKubernetesObjects loads configurations to k8s objects
-func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.ServiceConfig, objects *[]runtime.Object) error {
+func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.ServiceConfig, opt kobject.ConvertOptions, objects *[]runtime.Object) error {
+
 	// Configure the environment variables.
-	envs := k.ConfigEnvs(name, service)
+	envs, err := k.ConfigEnvs(name, service, opt)
+	if err != nil {
+		return errors.Wrap(err, "Unable to load env variables")
+	}
 
 	// Configure the container volumes.
 	volumesMount, volumes, pvc, err := k.ConfigVolumes(name, service)
@@ -343,12 +349,9 @@ func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.Servic
 	if len(service.TmpFs) > 0 {
 		TmpVolumesMount, TmpVolumes := k.ConfigTmpfs(name, service)
 
-		for _, volume := range TmpVolumes {
-			volumes = append(volumes, volume)
-		}
-		for _, vMount := range TmpVolumesMount {
-			volumesMount = append(volumesMount, vMount)
-		}
+		volumes = append(volumes, TmpVolumes...)
+
+		volumesMount = append(volumesMount, TmpVolumesMount...)
 
 	}
 
@@ -383,6 +386,33 @@ func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.Servic
 		template.Spec.Containers[0].Stdin = service.Stdin
 		template.Spec.Containers[0].TTY = service.Tty
 		template.Spec.Volumes = volumes
+		template.Spec.NodeSelector = service.Placement
+		// Configure the HealthCheck
+		// We check to see if it's blank
+		if !reflect.DeepEqual(service.HealthChecks, kobject.HealthCheck{}) {
+			probe := api.Probe{}
+
+			if len(service.HealthChecks.Test) > 0 {
+				probe.Handler = api.Handler{
+					Exec: &api.ExecAction{
+						Command: service.HealthChecks.Test,
+					},
+				}
+			} else {
+				return errors.New("Health check must contain a command")
+			}
+
+			probe.TimeoutSeconds = service.HealthChecks.Timeout
+			probe.PeriodSeconds = service.HealthChecks.Interval
+			probe.FailureThreshold = service.HealthChecks.Retries
+
+			// See issue: https://github.com/docker/cli/issues/116
+			// StartPeriod has been added to docker/cli however, it is not yet added
+			// to compose. Once the feature has been implemented, this will automatically work
+			probe.InitialDelaySeconds = service.HealthChecks.StartPeriod
+
+			template.Spec.Containers[0].LivenessProbe = &probe
+		}
 
 		if service.StopGracePeriod != "" {
 			template.Spec.TerminationGracePeriodSeconds, err = DurationStrToSecondsInt(service.StopGracePeriod)
@@ -392,14 +422,39 @@ func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.Servic
 		}
 
 		// Configure the resource limits
-		if service.MemLimit != 0 {
-			memoryResourceList := api.ResourceList{
-				api.ResourceMemory: *resource.NewQuantity(
-					int64(service.MemLimit), "RandomStringForFormat")}
-			template.Spec.Containers[0].Resources.Limits = memoryResourceList
+		if service.MemLimit != 0 || service.CPULimit != 0 {
+			resourceLimit := api.ResourceList{}
+
+			if service.MemLimit != 0 {
+				resourceLimit[api.ResourceMemory] = *resource.NewQuantity(int64(service.MemLimit), "RandomStringForFormat")
+			}
+
+			if service.CPULimit != 0 {
+				resourceLimit[api.ResourceCPU] = *resource.NewMilliQuantity(service.CPULimit, resource.DecimalSI)
+			}
+
+			template.Spec.Containers[0].Resources.Limits = resourceLimit
 		}
 
+		// Configure the resource requests
+		if service.MemReservation != 0 || service.CPUReservation != 0 {
+			resourceRequests := api.ResourceList{}
+
+			if service.MemReservation != 0 {
+				resourceRequests[api.ResourceMemory] = *resource.NewQuantity(int64(service.MemReservation), "RandomStringForFormat")
+			}
+
+			if service.CPUReservation != 0 {
+				resourceRequests[api.ResourceCPU] = *resource.NewMilliQuantity(service.CPUReservation, resource.DecimalSI)
+			}
+
+			template.Spec.Containers[0].Resources.Requests = resourceRequests
+		}
+
+		// Configure resource reservations
+
 		podSecurityContext := &api.PodSecurityContext{}
+
 		//set pid namespace mode
 		if service.Pid != "" {
 			if service.Pid == "host" {
@@ -409,9 +464,14 @@ func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.Servic
 			}
 		}
 
+		//set supplementalGroups
+		if service.GroupAdd != nil {
+			podSecurityContext.SupplementalGroups = service.GroupAdd
+		}
+
 		// Setup security context
 		securityContext := &api.SecurityContext{}
-		if service.Privileged == true {
+		if service.Privileged {
 			securityContext.Privileged = &service.Privileged
 		}
 		if service.User != "" {
@@ -441,9 +501,9 @@ func (k *Kubernetes) UpdateKubernetesObjects(name string, service kobject.Servic
 
 		// Configure the container restart policy.
 		switch service.Restart {
-		case "", "always":
+		case "", "always", "any":
 			template.Spec.RestartPolicy = api.RestartPolicyAlways
-		case "no":
+		case "no", "none":
 			template.Spec.RestartPolicy = api.RestartPolicyNever
 		case "on-failure":
 			template.Spec.RestartPolicy = api.RestartPolicyOnFailure
@@ -494,78 +554,7 @@ func (k *Kubernetes) SortServicesFirst(objs *[]runtime.Object) {
 	*objs = ret
 }
 
-func (k *Kubernetes) findDependentVolumes(svcname string, komposeObject kobject.KomposeObject) (volumes []api.Volume, volumeMounts []api.VolumeMount, err error) {
-	// Get all the volumes and volumemounts this particular service is dependent on
-	for _, dependentSvc := range komposeObject.ServiceConfigs[svcname].VolumesFrom {
-		vols, volMounts, err := k.findDependentVolumes(dependentSvc, komposeObject)
-		if err != nil {
-			err = errors.Wrap(err, "k.findDependentVolumes failed")
-			return nil, nil, err
-		}
-		volumes = append(volumes, vols...)
-		volumeMounts = append(volumeMounts, volMounts...)
-	}
-	// add the volumes info of this service
-	volMounts, vols, _, err := k.ConfigVolumes(svcname, komposeObject.ServiceConfigs[svcname])
-	if err != nil {
-		err = errors.Wrap(err, "k.ConfigVolumes failed")
-		return nil, nil, err
-	}
-	volumes = append(volumes, vols...)
-	volumeMounts = append(volumeMounts, volMounts...)
-	return volumes, volumeMounts, nil
-}
-
-// VolumesFrom creates volums and volumeMounts for volumes_from
-func (k *Kubernetes) VolumesFrom(objects *[]runtime.Object, komposeObject kobject.KomposeObject) error {
-	for _, obj := range *objects {
-		switch t := obj.(type) {
-		case *api.ReplicationController:
-			svcName := t.ObjectMeta.Name
-			for _, dependentSvc := range komposeObject.ServiceConfigs[svcName].VolumesFrom {
-				volumes, volumeMounts, err := k.findDependentVolumes(dependentSvc, komposeObject)
-				if err != nil {
-					return errors.Wrap(err, "k.findDependentVolumes")
-				}
-				t.Spec.Template.Spec.Volumes = append(t.Spec.Template.Spec.Volumes, volumes...)
-				t.Spec.Template.Spec.Containers[0].VolumeMounts = append(t.Spec.Template.Spec.Containers[0].VolumeMounts, volumeMounts...)
-			}
-		case *extensions.Deployment:
-			svcName := t.ObjectMeta.Name
-			for _, dependentSvc := range komposeObject.ServiceConfigs[svcName].VolumesFrom {
-				volumes, volumeMounts, err := k.findDependentVolumes(dependentSvc, komposeObject)
-				if err != nil {
-					return errors.Wrap(err, "k.findDependentVolumes")
-				}
-				t.Spec.Template.Spec.Volumes = append(t.Spec.Template.Spec.Volumes, volumes...)
-				t.Spec.Template.Spec.Containers[0].VolumeMounts = append(t.Spec.Template.Spec.Containers[0].VolumeMounts, volumeMounts...)
-			}
-		case *extensions.DaemonSet:
-			svcName := t.ObjectMeta.Name
-			for _, dependentSvc := range komposeObject.ServiceConfigs[svcName].VolumesFrom {
-				volumes, volumeMounts, err := k.findDependentVolumes(dependentSvc, komposeObject)
-				if err != nil {
-					return errors.Wrap(err, "k.findDependentVolumes")
-				}
-				t.Spec.Template.Spec.Volumes = append(t.Spec.Template.Spec.Volumes, volumes...)
-				t.Spec.Template.Spec.Containers[0].VolumeMounts = append(t.Spec.Template.Spec.Containers[0].VolumeMounts, volumeMounts...)
-			}
-		case *deployapi.DeploymentConfig:
-			svcName := t.ObjectMeta.Name
-			for _, dependentSvc := range komposeObject.ServiceConfigs[svcName].VolumesFrom {
-				volumes, volumeMounts, err := k.findDependentVolumes(dependentSvc, komposeObject)
-				if err != nil {
-					return errors.Wrap(err, "k.findDependentVolumes")
-				}
-				t.Spec.Template.Spec.Volumes = append(t.Spec.Template.Spec.Volumes, volumes...)
-				t.Spec.Template.Spec.Containers[0].VolumeMounts = append(t.Spec.Template.Spec.Containers[0].VolumeMounts, volumeMounts...)
-			}
-		}
-	}
-	return nil
-}
-
-//Ensure the kubernetes objects are in a consistent order
+// SortedKeys Ensure the kubernetes objects are in a consistent order
 func SortedKeys(komposeObject kobject.KomposeObject) []string {
 	var sortedKeys []string
 	for name := range komposeObject.ServiceConfigs {
@@ -575,7 +564,7 @@ func SortedKeys(komposeObject kobject.KomposeObject) []string {
 	return sortedKeys
 }
 
-//converts duration string to *int64 in seconds
+// DurationStrToSecondsInt converts duration string to *int64 in seconds
 func DurationStrToSecondsInt(s string) (*int64, error) {
 	if s == "" {
 		return nil, nil
@@ -586,4 +575,28 @@ func DurationStrToSecondsInt(s string) (*int64, error) {
 	}
 	r := (int64)(duration.Seconds())
 	return &r, nil
+}
+
+func GetEnvsFromFile(file string, opt kobject.ConvertOptions) (map[string]string, error) {
+	// Get the correct file context / directory
+	composeDir, err := transformer.GetComposeFileDir(opt.InputFiles)
+	if err != nil {
+		return nil, errors.Wrap(err, "Unable to load file context")
+	}
+	fileLocation := path.Join(composeDir, file)
+
+	// Load environment variables from file
+	envLoad, err := godotenv.Read(fileLocation)
+	if err != nil {
+		return nil, errors.Wrap(err, "Unable to read env_file")
+	}
+
+	return envLoad, nil
+}
+
+func FormatEnvName(name string) string {
+	envName := strings.Trim(name, "./")
+	envName = strings.Replace(envName, ".", "-", -1)
+	envName = strings.Replace(envName, "/", "-", -1)
+	return envName
 }

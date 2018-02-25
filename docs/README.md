@@ -1,7 +1,1 @@
-# Kompose Documentation
-
-* [Architecture](architecture.md)
-* [Conversion](conversion.md)
-* [Development](development.md)
-* [Setup](setup.md)
-* [User Guide](user-guide.md)
+Note: These /docs files are best viewed at [kompose.io](http://kompose.io)

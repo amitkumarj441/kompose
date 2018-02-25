@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors All rights reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,15 +19,16 @@ package cmd
 import (
 	"strings"
 
-	"github.com/kubernetes-incubator/kompose/pkg/app"
-	"github.com/kubernetes-incubator/kompose/pkg/kobject"
+	"github.com/kubernetes/kompose/pkg/app"
+	"github.com/kubernetes/kompose/pkg/kobject"
 	"github.com/spf13/cobra"
 )
 
 // TODO: comment
 var (
-	DownNamespace string
-	DownOpt       kobject.ConvertOptions
+	DownNamespace  string
+	DownController string
+	DownOpt        kobject.ConvertOptions
 )
 
 var downCmd = &cobra.Command{
@@ -39,13 +40,14 @@ var downCmd = &cobra.Command{
 		// Create the Convert options.
 		DownOpt = kobject.ConvertOptions{
 			InputFiles:      GlobalFiles,
-			Provider:        strings.ToLower(GlobalProvider),
+			Provider:        GlobalProvider,
 			Namespace:       DownNamespace,
+			Controller:      strings.ToLower(DownController),
 			IsNamespaceFlag: cmd.Flags().Lookup("namespace").Changed,
 		}
 
 		// Validate before doing anything else.
-		app.ValidateComposeFile(cmd, &DownOpt)
+		app.ValidateComposeFile(&DownOpt)
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		app.Down(DownOpt)
@@ -54,5 +56,6 @@ var downCmd = &cobra.Command{
 
 func init() {
 	downCmd.Flags().StringVar(&DownNamespace, "namespace", "default", " Specify Namespace to deploy your application")
+	downCmd.Flags().StringVar(&DownController, "controller", "", `Set the output controller ("deployment"|"daemonSet"|"replicationController")`)
 	RootCmd.AddCommand(downCmd)
 }
